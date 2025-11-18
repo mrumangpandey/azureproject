@@ -1,0 +1,9 @@
+{
+	"name": "adfumang",
+	"location": "eastus",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "80face8e-fbd0-49ec-9f33-3aa8ec4641c4",
+		"tenantId": "87e6c0a4-bce8-4c97-a870-984ca320b8b1"
+	}
+}
