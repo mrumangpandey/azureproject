@@ -31,7 +31,7 @@
 					"source": {
 						"type": "AzureSqlSource",
 						"sqlReaderQuery": {
-							"value": "Select * from @{pipeline().parameters.schema_Name}.@{pipeline().parameters.table_Name} WHERE @{pipeline().parameters.cdc_col_Name} > '@{activity('Last_cdc').output.value[0].cdc}'",
+							"value": "SELECT * FROM @{pipeline().parameters.schema_Name}.@{pipeline().parameters.table_Name} WHERE @{pipeline().parameters.cdc_col_Name} > '@{if(empty(pipeline().parameters.from_date),activity('Last_cdc').output.value[0].cdc,pipeline().parameters.from_date)}'",
 							"type": "Expression"
 						},
 						"queryTimeout": "02:00:00",
@@ -68,7 +68,10 @@
 						"type": "DatasetReference",
 						"parameters": {
 							"sink_container": "bronze",
-							"sink_folder": "User",
+							"sink_folder": {
+								"value": "@pipeline().parameters.table_Name",
+								"type": "Expression"
+							},
 							"sink_fileName": {
 								"value": "@concat(pipeline().parameters.table_Name,'_',variables('current_time'))",
 								"type": "Expression"
@@ -131,82 +134,8 @@
 				}
 			},
 			{
-				"name": "update_last_cdc",
-				"type": "Copy",
-				"dependsOn": [
-					{
-						"activity": "max_cdc",
-						"dependencyConditions": [
-							"Succeeded"
-						]
-					}
-				],
-				"policy": {
-					"timeout": "0.12:00:00",
-					"retry": 0,
-					"retryIntervalInSeconds": 30,
-					"secureOutput": false,
-					"secureInput": false
-				},
-				"userProperties": [],
-				"typeProperties": {
-					"source": {
-						"type": "JsonSource",
-						"additionalColumns": [
-							{
-								"name": "cdc",
-								"value": {
-									"value": "@activity('max_cdc').output.resultSets.rows.cdc",
-									"type": "Expression"
-								}
-							}
-						],
-						"storeSettings": {
-							"type": "AzureBlobFSReadSettings",
-							"recursive": true,
-							"enablePartitionDiscovery": false
-						},
-						"formatSettings": {
-							"type": "JsonReadSettings"
-						}
-					},
-					"sink": {
-						"type": "JsonSink",
-						"storeSettings": {
-							"type": "AzureBlobFSWriteSettings"
-						},
-						"formatSettings": {
-							"type": "JsonWriteSettings"
-						}
-					},
-					"enableStaging": false
-				},
-				"inputs": [
-					{
-						"referenceName": "ds_para_json",
-						"type": "DatasetReference",
-						"parameters": {
-							"container": "bronze",
-							"folder": "cdc",
-							"file_Name": "empty.json"
-						}
-					}
-				],
-				"outputs": [
-					{
-						"referenceName": "ds_para_json",
-						"type": "DatasetReference",
-						"parameters": {
-							"container": "bronze",
-							"folder": "cdc",
-							"file_Name": "cdc.json"
-						}
-					}
-				]
-			},
-			{
-				"name": "max_cdc",
-				"type": "Script",
+				"name": "if_Incremental_data",
+				"type": "IfCondition",
 				"dependsOn": [
 					{
 						"activity": "AzureSqlToADLS",
@@ -215,29 +144,149 @@
 						]
 					}
 				],
-				"policy": {
-					"timeout": "0.12:00:00",
-					"retry": 0,
-					"retryIntervalInSeconds": 30,
-					"secureOutput": false,
-					"secureInput": false
-				},
 				"userProperties": [],
-				"linkedServiceName": {
-					"referenceName": "lsAzureSqlDatabase",
-					"type": "LinkedServiceReference"
-				},
 				"typeProperties": {
-					"scripts": [
+					"expression": {
+						"value": "@greater(activity('AzureSqlToADLS').output.dataRead,0 )",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
 						{
-							"type": "Query",
-							"text": {
-								"value": "Select MAX(@{pipeline().parameters.cdc_col_Name}) as cdc FROM @{pipeline().parameters.schema_Name}.@{pipeline().parameters.table_Name}",
-								"type": "Expression"
+							"name": "DeleteEmptyFile",
+							"type": "Delete",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"dataset": {
+									"referenceName": "ds_para_json",
+									"type": "DatasetReference",
+									"parameters": {
+										"container": "bronze",
+										"folder": {
+											"value": "@pipeline().parameters.table_Name",
+											"type": "Expression"
+										},
+										"file_Name": "@concat(pipeline().parameters.table_Name,'_',variables('current_time'))"
+									}
+								},
+								"enableLogging": false,
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"enablePartitionDiscovery": false
+								}
 							}
 						}
 					],
-					"scriptBlockExecutionTimeout": "02:00:00"
+					"ifTrueActivities": [
+						{
+							"name": "update_last_cdc",
+							"type": "Copy",
+							"dependsOn": [
+								{
+									"activity": "max_cdc",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "JsonSource",
+									"additionalColumns": [
+										{
+											"name": "cdc",
+											"value": {
+												"value": "@activity('max_cdc').output.value[0].cdc",
+												"type": "Expression"
+											}
+										}
+									],
+									"storeSettings": {
+										"type": "AzureBlobFSReadSettings",
+										"recursive": true,
+										"enablePartitionDiscovery": false
+									},
+									"formatSettings": {
+										"type": "JsonReadSettings"
+									}
+								},
+								"sink": {
+									"type": "JsonSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings"
+									},
+									"formatSettings": {
+										"type": "JsonWriteSettings"
+									}
+								},
+								"enableStaging": false
+							},
+							"inputs": [
+								{
+									"referenceName": "ds_para_json",
+									"type": "DatasetReference",
+									"parameters": {
+										"container": "bronze",
+										"folder": "cdc",
+										"file_Name": "empty.json"
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "ds_para_json",
+									"type": "DatasetReference",
+									"parameters": {
+										"container": "bronze",
+										"folder": "cdc",
+										"file_Name": "cdc.json"
+									}
+								}
+							]
+						},
+						{
+							"name": "max_cdc",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"sqlReaderQuery": "Select MAX(@{pipeline().parameters.cdc_col_Name}) as cdc FROM @{pipeline().parameters.schema_Name}.@{pipeline().parameters.table_Name}",
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "dsAzureSql",
+									"type": "DatasetReference"
+								},
+								"firstRowOnly": false
+							}
+						}
+					]
 				}
 			}
 		],
@@ -249,6 +298,9 @@
 				"type": "string"
 			},
 			"cdc_col_Name": {
+				"type": "string"
+			},
+			"from_date": {
 				"type": "string"
 			}
 		},
